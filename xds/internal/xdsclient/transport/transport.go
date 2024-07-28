@@ -23,7 +23,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"google.golang.org/grpc/internal/grpcsync"
 	"sync"
 	"time"
 
@@ -33,6 +32,7 @@ import (
 	"google.golang.org/grpc/internal/backoff"
 	"google.golang.org/grpc/internal/buffer"
 	"google.golang.org/grpc/internal/grpclog"
+	"google.golang.org/grpc/internal/grpcsync"
 	"google.golang.org/grpc/internal/pretty"
 	"google.golang.org/grpc/internal/xds/bootstrap"
 	"google.golang.org/grpc/keepalive"
