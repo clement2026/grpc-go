@@ -99,9 +99,9 @@ type Transport struct {
 	// will be reset upon stream restarts.
 	nonces map[string]string
 
-	lrsMu       sync.Mutex     // Protects all LRS state.
-	lrsRefCount int            // Reference count on the load store.
-	lrsQuit     grpcsync.Event // To notify close of LRS stream
+	lrsMu       sync.Mutex      // Protects all LRS state.
+	lrsRefCount int             // Reference count on the load store.
+	lrsQuit     *grpcsync.Event // To notify close of LRS stream
 }
 
 // OnRecvHandlerFunc is the implementation at the xDS data model layer, which
