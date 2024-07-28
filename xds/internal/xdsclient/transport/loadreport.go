@@ -61,14 +61,12 @@ func (t *Transport) lrsStartStream() {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.lrsCancelStream = cancel
-
-	// Create a new done channel everytime a new stream is created. This ensures
-	// that we don't close the same channel multiple times (from lrsRunner()
+	// Create a new done channel and a quit event everytime a new stream is created.
+	// This ensures that we don't close the same channel multiple times (from lrsRunner()
 	// goroutine) when multiple streams are created and closed.
 	t.lrsRunnerDoneCh = make(chan struct{})
-	go t.lrsRunner(ctx)
+	t.lrsQuit = grpcsync.Event{}
+	go t.lrsRunner()
 }
 
 // lrsStopStream closes the LRS stream, if this is the last user of the stream.
@@ -82,7 +80,8 @@ func (t *Transport) lrsStopStream() {
 		return
 	}
 
-	t.lrsCancelStream()
+	t.lrsQuit.Fire()
+
 	t.logger.Infof("Stopping LRS stream")
 
 	// Wait for the runner goroutine to exit. The done channel will be
@@ -93,14 +92,16 @@ func (t *Transport) lrsStopStream() {
 // lrsRunner starts an LRS stream to report load data to the management server.
 // It reports load at constant intervals (as configured by the management
 // server) until the context is cancelled.
-func (t *Transport) lrsRunner(ctx context.Context) {
+func (t *Transport) lrsRunner() {
 	defer close(t.lrsRunnerDoneCh)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// This feature indicates that the client supports the
 	// LoadStatsResponse.send_all_clusters field in the LRS response.
 	node := proto.Clone(t.nodeProto).(*v3corepb.Node)
 	node.ClientFeatures = append(node.ClientFeatures, "envoy.lrs.supports_send_all_clusters")
-
 	runLoadReportStream := func() error {
 		// streamCtx is created and canceled in case we terminate the stream
 		// early for any reason, to avoid gRPC-Go leaking the RPC's monitoring
@@ -125,26 +126,54 @@ func (t *Transport) lrsRunner(ctx context.Context) {
 			return nil
 		}
 
-		// We reset backoff state when we successfully receive at least one
-		// message from the server.
-		t.sendLoads(streamCtx, stream, clusters, interval)
-		return backoff.ErrResetBackoff
+		shouldQuit := t.sendLoads(stream, clusters, interval)
+		if shouldQuit {
+			return errors.New("quit lrsRunner")
+		} else {
+			// We reset backoff state when we successfully receive at least one
+			// message from the server.
+			return backoff.ErrResetBackoff
+		}
 	}
+
+	// When lrsQuit is fired, this goroutine make sure everything is cleaned up within 30 seconds.
+	// If lrsRunner() doesn't finish within 30 seconds after lrsQuit is triggered,
+	// it might be because backoff.RunF is waiting for a tick or runLoadReportStream is blocked on I/O.
+	// In that case, call cancel to stop everything.
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.lrsQuit.Done():
+			timer := time.NewTimer(30 * time.Second)
+			select {
+			case <-timer.C:
+				cancel()
+			case <-ctx.Done():
+				timer.Stop()
+			}
+		}
+	}()
+
 	backoff.RunF(ctx, runLoadReportStream, t.backoff)
 }
 
-func (t *Transport) sendLoads(ctx context.Context, stream lrsStream, clusterNames []string, interval time.Duration) {
+func (t *Transport) sendLoads(stream lrsStream, clusterNames []string, interval time.Duration) bool {
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
+	shouldQuit := false
 	for {
 		select {
 		case <-tick.C:
-		case <-ctx.Done():
-			return
+		case <-t.lrsQuit.Done():
+			shouldQuit = true
 		}
 		if err := t.sendLoadStatsRequest(stream, t.lrsStore.Stats(clusterNames)); err != nil {
 			t.logger.Warningf("Writing to LRS stream failed: %v", err)
-			return
+			return shouldQuit
+		}
+		if shouldQuit {
+			return shouldQuit
 		}
 	}
 }
