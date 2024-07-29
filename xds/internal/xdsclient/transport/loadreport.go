@@ -61,11 +61,12 @@ func (t *Transport) lrsStartStream() {
 		return
 	}
 
-	// Create a new done channel and a quit event everytime a new stream is created.
-	// This ensures that we don't close the same channel multiple times (from lrsRunner()
+	t.lrsQuit = grpcsync.NewEvent()
+
+	// Create a new done channel everytime a new stream is created. This ensures
+	// that we don't close the same channel multiple times (from lrsRunner()
 	// goroutine) when multiple streams are created and closed.
 	t.lrsRunnerDoneCh = make(chan struct{})
-	t.lrsQuit = grpcsync.NewEvent()
 	go t.lrsRunner()
 }
 
